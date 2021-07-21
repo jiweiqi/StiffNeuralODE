@@ -18,7 +18,7 @@ n_plot      = 200;
 batch_size  = 50;
 opt         = ADAMW(0.005, (0.9, 0.999), 1.f-6);
 lb          = 1.e-6;
-ode_solver  = AutoTsit5(Rosenbrock23(autodiff=false));
+ode_solver  = Rosenbrock23();
 
 function rober!(du, u, k, t)
     y1, y2, y3  = u
@@ -43,16 +43,28 @@ i_slow      = [1, 2, 3];
 nslow       = length(i_slow);
 node        = 5;
 dudt2       = Chain(x -> x,
-                  Dense(nslow, node, gelu),
-                  Dense(node, node, gelu),
-                  Dense(node, node, gelu),
-                  Dense(node, node, gelu),
-                  Dense(node, node, gelu),
-                  Dense(node, node, gelu),
+                  Dense(nslow, node, mish),
+                  Dense(node, node, mish),
+                  Dense(node, node, mish),
+                  Dense(node, node, mish),
+                  Dense(node, node, mish),
+                  Dense(node, node, mish),
                   Dense(node, nslow))
 
 p, re       = Flux.destructure(dudt2);
 rep         = re(p)
+
+function power_transform(x; λ=0.2)
+    return (sign(x) * abs(x)^λ - 1.0) / λ
+end
+
+function inv_power_transform(x; λ=0.2)
+    return (sign(x) * abs(x)^λ - 1.0) / λ
+end
+
+normdata_power = power_transform.(normdata)
+y_mean = mean(normdata_power, dims=2)
+y_std = std(normdata_power, dims=2)
 
 yscale_     = yscale[:, 1]
 function dudt!(du, u, p, t)
@@ -62,15 +74,20 @@ end
 prob        = ODEProblem(dudt!, u0[i_slow], tspan)
 sense       = BacksolveAdjoint(checkpointing=true; autojacvec=ZygoteVJP());
 function predict_n_ode(p, sample)
-    global rep  = re(p)
+    global rep
+    rep  = re(p)
     _prob       = remake(prob, p=p, tspan=[0, tsteps[sample]])
     pred        = Array(solve(_prob, ode_solver, saveat=tsteps[1:sample], atol=lb, sensalg=sense))
 end
 pred        = predict_n_ode(p, ntotal)
 
+
 function loss_n_ode(p, sample=ntotal)
     pred = predict_n_ode(p, sample)
-    loss = mae(pred ./ yscale, normdata[i_slow, 1:size(pred)[2]] ./ yscale)
+    nt = 1:size(pred)[2]
+    # loss = mae(pred ./ yscale, normdata[i_slow, 1:size(pred)[2]] ./ yscale)
+    label = @view(normdata_power[i_slow, nt])
+    loss = mae( power_transform.(pred) ./y_std, normdata_power ./y_std )
     return loss
 end
 loss_n_ode(p, ntotal)
